@@ -1,0 +1,374 @@
+# Hier stehen alle eure imports. Hier müsst ihr nichts mehr ändern
+import time
+import random
+import RPi.GPIO as GPIO
+from luma.led_matrix.device import max7219
+from luma.core.interface.serial import spi, noop
+from luma.core.render import canvas
+from luma.core.virtual import viewport
+from luma.core.legacy import text, show_message
+from luma.core.legacy.font import proportional, CP437_FONT, TINY_FONT, SINCLAIR_FONT, LCD_FONT
+
+# Hier gebt ihr an welche Pins ihr verwendet
+GPIO.setmode(GPIO.BOARD)
+GPIO.setup(7, GPIO.IN , pull_up_down = GPIO.PUD_DOWN)
+GPIO.setup(11, GPIO.IN , pull_up_down = GPIO.PUD_DOWN)
+GPIO.setup(13, GPIO.IN , pull_up_down = GPIO.PUD_DOWN)
+GPIO.setup(15, GPIO.IN , pull_up_down = GPIO.PUD_DOWN) 
+
+# Hier erstellt ihr den Player1, den Player2 und den Punkt. Gleichzeitig gebt ihr ihnen auch eine Startposition.
+# Der Punktestand ist ein Tupel, da beide Spieler eine Punktzahl haben.
+player1 = [(0,3),(0,4)]
+player2 = [(7,3),(7,4)]
+dot     = [(3,2),(3,2)]
+Punktestand = (0,0)
+
+# Diese Funktion habe ich geschrieben. Sie zeichnet mithilfe eures Punktes und beider Spieler das Spielbrett
+def drawField(player1, player2, dot, virtual):
+    with canvas(virtual) as draw:
+        # zeichne Player 1
+        draw.line(player1, fill="White")
+        # zeichne Player 2
+        draw.line(player2, fill="White")
+        # zeichne Dot
+        draw.rectangle(dot, outline="white", fill="white")
+        
+    # übernimm die Änderungen im virtuellen Bild
+    virtual.set_position((0,0))
+
+
+# Diese Funktionen bekommt den aktuellen Punkt und lässt ihn nach oben rechts laufen 
+# und gibt diesen Punkt auch wieder. Zusätzlich muss noch folgendes beachtet werden:
+# 1. Kollision mit oben 2. Der Spieler2 blockt den Schlag 3. Ein Tor wird geschossen 4. Der Punkt bewegt sich normal
+#   |      /
+#   |     /
+#   |    /
+#   |   *
+#   ---------------
+def moveDirectionRU(dot, player2):
+    richtung = 0
+    # Gucke wo ich in der Zukunft lande ✓
+    dotX = dot[0][0] + 1
+    dotY = dot[0][1] - 1
+        
+    # Überprüfe ob im Feld ✓
+    # Benutze auf der X-Achse die 6, da dort schon auf der Position 7 die Kollision mit dem Spieler abgefragt wird
+    if dotX <= 6 and dotY >= 0:
+        dot[0] = (dotX, dotY)
+        dot[1] = (dotX, dotY)
+    
+    # Überprüfe ob Spieler 2 getroffen wurde ✓
+    elif (dotY == player2[0][1] or dotY == player2[1][1]) and dotX == 7:
+        dot[0] = (dotX - 1, dotY)
+        dot[1] = (dotX - 1, dotY) 
+        
+        richtung = 3
+        
+    # Überprüfe ob im aus gelandet ✓
+    elif dotX == 7:
+        print("Spieler 1 bekommt einen Punkt yay")
+        richtung = 4
+        
+    # Überprüfe ob oberer Rand ✓
+    # Überprüfe danach noch den Fall, dass der Dot von der Wand in einen Spieler oder im Aus landen würde.
+    elif dotY < 0:  
+        dotY = dotY + 1
+        richtung = 1
+        
+        # Überprüfe ob zusätzlich ein Spieler getroffen wurde 
+        if (dotY == player2[0][1] or dotY == player2[1][1]) and dotX == 7:
+            dotX = dotX - 1 
+            richtung = 2
+            
+        # Überprüfe ob zusätzlich ein Punkt erzielt wurde 
+        elif dotX == 7:
+            print("Spieler 1 bekommt einen Punkt yay")
+            richtung = 4
+            
+        dot[0] = (dotX, dotY)
+        dot[1] = (dotX, dotY) 
+        
+    print("rechts oben")
+    
+    return (dot, richtung) 
+    
+# Diese Funktionen bekommt den aktuellen Punkt und lässt ihn nach unten rechts laufen 
+# und gibt diesen Punkt auch wieder. Zusätzlich muss noch folgendes beachtet werden:
+# 1. Kollision mit unten 2. Der Spieler2 blockt den Schlag 3. Ein Tor wird geschossen 4. Der Punkt bewegt sich normal
+#   |   *
+#   |    \ 
+#   |     \
+#   |      \
+#   ---------------
+def moveDirectionRD(dot, player2):
+    richtung = 1
+    
+    # Gucke wo ich in der Zukunft lande ✓
+    dotX = dot[0][1] + 1
+    dotY = dot[1][1] + 1
+    
+    # Überprüfe ob im Feld ✓
+    # Benutze auf der X-Achse die 6, da dort schon auf der Position 7 die Kollision mit dem Spieler abgefragt wird
+    if dotX <= 6 and dotY <= 7:
+        dot[0] = (dotX, dotY)
+        dot[1] = (dotX, dotY)   
+    
+    # Überprüfe ob Spieler2 getroffen wurde ✓
+    elif (dotX == player2[0][1] or dotY == player2[1][1]) and dotX == 7:
+        dot[0] = (dotX - 1, dotY)
+        dot[1] = (dotX - 1, dotY)
+        richtung = 2
+        
+    # Überprüfe ob im aus gelandet ✓
+    elif dotX == 7:
+        print("Spieler 1 bekommt einen Punkt yay")
+        richtung = 4
+        
+    # Überprüfe ob unterer Rand ✓
+    # Überprüfe danach noch den Fall, dass der Dot von der Wand in einen Spieler oder im Aus landen würde.
+    elif dotY > 7:  
+        dotY = dotY - 1 
+        richtung = 0
+        
+        # Überprüfe ob zusätzlich ein Spieler getroffen wurde 
+        if (dotY == player2[0][1] or dotY == player2[1][1]) and dotX == 7:
+            dotX = dotX - 1 
+            richtung = 3
+            
+        # Überprüfe ob zusätzlich ein Punkt erzielt wurde 
+        elif dotX == 7:
+            print("Spieler 1 bekommt einen Punkt yay")
+            richtung = 4
+            
+        dot[0] = (dotX, dotY)
+        dot[1] = (dotX, dotY) 
+    
+    print("rechts unten")
+    
+    return (dot, richtung)
+
+# Diese Funktionen bekommt den aktuellen Punkt und lässt ihn nach unten links laufen 
+# und gibt diesen Punkt auch wieder. Zusätzlich muss noch folgendes beachtet werden:
+# 1. Kollision mit unten 2. Der Spieler1 blockt den Schlag 3. Ein Tor wird geschossen 4. Der Punkt bewegt sich normal
+#   |        *
+#   |       / 
+#   |      /
+#   |     /
+#   ---------------
+def moveDirectionLD(dot, player1):
+    richtung = 2
+    
+    # Gucke wo ich in der Zukunft lande
+    dotX = dot[0][1] - 1
+    dotY = dot[1][1] - 1
+    
+    # Überprüfe ob im Feld
+    # Benutze auf der X-Achse die 1, da dort schon auf der Position 0 die Kollision mit dem Spieler abgefragt wird
+    if dotX >= 1 and dotY <= 7:
+        dot[0] = (dotX, dotY)
+        dot[1] = (dotX, dotY)
+        
+    #Überprüfe ob Spieler 1 gertroffen wurde
+    elif (dotX == player1[0][1] or dotY == player1[1][1]) and dotX == 0:
+        dot[0] = (dotX + 1, dotY)
+        dot[1] = (dotX + 1, dotY)
+        richtung = 1
+    
+    #Überprüfe ob im aus gelandet
+    elif dotX == 0:
+        print("Spieler2 bekommt einen Punkt yay")
+        richtung = 5
+        
+    # Überprüfe ob unterer Rand
+    # Überprüfe danach noch den Fall, dass der Dot von der Wand in einen Spieler oder im Aus landen würde.
+    elif dotY > 7:  
+        dotY = dotY - 1 
+        richtung = 3
+        
+        # Überprüfe ob zusätzlich ein Spieler getroffen wurde 
+        if (dotY == player2[0][1] or dotY == player2[1][1]) and dotX == 7:
+            dotX = dotX + 1
+            richtung = 0
+            
+        # Überprüfe ob zusätzlich ein Punkt erzielt wurde 
+        elif dotX == 0:
+            print("Spieler 2 bekommt einen Punkt yay")
+            richtung = 5
+            
+        dot[0] = (dotX, dotY)
+        dot[1] = (dotX, dotY) 
+    
+    print("links unten")
+    
+    return (dot, richtung) 
+
+# Diese Funktionen bekommt den aktuellen Punkt und lässt ihn nach oben links laufen 
+# und gibt diesen Punkt auch wieder. Zusätzlich muss noch folgendes beachtet werden:
+# 1. Kollision mit oben 2. Der Spieler1 blockt den Schlag 3. Ein Tor wird geschossen 4. Der Punkt bewegt sich normal
+#   |    \
+#   |     \
+#   |      \
+#   |       *
+#   ---------------
+def moveDirectionLU(dot, player1):
+    richtung = 3
+    
+    # Gucke wo ich in der Zukunft lande
+    dotX = dot[0][0] - 1
+    dotY = dot[0][1] - 1
+    
+    # Überprüfe ob im Feld 
+    # Benutze auf der X-Achse die 1, da dort schon auf der Position 0 die Kollision mit dem Spieler abgefragt wird
+    if dotX >= 1 and dotY >= 0:
+        dot[0] = (dotX, dotY)
+        dot[1] = (dotX, dotY)
+    
+    # Überprüfe ob Spieler1 gertroffen wurde
+    elif (dotX == player1[0][1] or dotY == player1[1][1]) and dotX == 0:
+        dot[0] = (dotX + 1, dotY)
+        dot[1] = (dotX + 1, dotY)
+        richtung = 0
+    
+    # Überprüfe ob im aus gelandet
+    elif dotX == 0:
+        print("Spieler 2 bekommt einen Punkt yay")
+        richtung = 5
+    
+    # Überprüfe ob oberer Rand
+    # Überprüfe danach noch den Fall, dass der Dot von der Wand in einen Spieler oder im Aus landen würde.
+    elif dotY < 0:  
+        dotY = dotY + 1 
+        richtung = 2
+        
+        # Überprüfe ob zusätzlich ein Spieler getroffen wurde 
+        if (dotY == player2[0][1] or dotY == player2[1][1]) and dotX == 7:
+            dotX = dotX + 1 
+            richtung = 1
+            
+        # Überprüfe ob zusätzlich ein Punkt erzielt wurde 
+        elif dotX == 0:
+            print("Spieler 2 bekommt einen Punkt yay")
+            richtung = 5
+            
+        dot[0] = (dotX, dotY)
+        dot[1] = (dotX, dotY) 
+        
+    print("links oben")
+    
+    return (dot, richtung)
+    
+# Hier verarbeitet ihr den Spieler um nach oben zu gehen. (Es kann sowohl für Spieler 1 als auch 2 gelten)
+def SpielerUp(player):    
+    playerX = player[0][1] - 1
+    playerY = player[1][1] - 1
+    
+    if playerX >= 0 and playerY >= 0:
+        player[0] = (player[0][0],playerX)
+        player[1] = (player[1][0],playerY)
+    
+    return player
+    
+# Hier verarbeitet ihr den Spieler um nach unten zu gehen. (Es kann sowohl für Spieler 1 als auch 2 gelten)
+def SpielerDown(player):
+    playerX = player[0][1] + 1 
+    playerY = player[1][1] + 1
+    
+    if playerX <= 7 and playerY <= 7:
+        player[0] = (player[0][0],playerX)
+        player[1] = (player[1][0],playerY)
+    
+    return player
+    
+serial = spi(port=0, device=0, gpio=noop())
+device = max7219(serial, cascaded = 1, block_orientation = 0)
+device.contrast(6)
+virtual = viewport(device, width=8, height=8)
+
+#-------------------------- Ab hier beginnt euer Programm -------------------------------
+
+# Ihr müsst nur player1, player2 und dot ändern. Wenn ihr das getan habt müsst ihr immer drawField() mit 
+# den jeweiligen Variablen aufrufen.
+drawField(player1, player2, dot, virtual)
+
+# Generiere zufallsrichtung 
+random.seed()
+richtung = random.randint(0,3)
+delay = 1
+
+while True:
+    # Dieser Block guckt auf die Eingaben der Pins und ruft die dazugehörigen Spielerbewegungen auf.
+
+    # Spieler1 Up + Spieler2 Up
+    if GPIO.input(15) and GPIO.input(11):
+        player1 = SpielerUp(player1)
+        player2 = SpielerUp(player2) 
+    # Spieler1 Up + Spieler2 Down
+    elif GPIO.input(15) and GPIO.input(7):
+        player1 = SpielerUp(player1)
+        player2 = SpielerDow0n(player2)
+    # Spieler1 Down + Spieler2 Up
+    elif GPIO.input(13) and GPIO.input(11):
+        player1 = SpielerDown(player1)
+        player2 = SpielerUp(player2)
+    # Spieler1 Down + Spieler2 Down
+    elif GPIO.input(13) and GPIO.input(7):
+        player1 = SpielerDown(player1)
+        player2 = SpielerDown(player2)
+    # Spieler1 Up
+    elif GPIO.input(15):
+        player1 = SpielerUp(player1)
+    # Spieler1 Down
+    elif GPIO.input(13):
+        player1 = SpielerDown(player1)
+    # Spieler2 Up
+    elif GPIO.input(11):
+        player2 = SpielerUp(player2)
+    # Spieler2 Down
+    elif GPIO.input(7):
+        player2 = SpielerDown(player2)
+        
+    # Dieser Block guckt auf die aktuelle Richtung des Blocks und ruft die dazugehörige movedirection Funktion auf 
+    # Der Hauptaufwand wird aber in den movedirection Funktionen gemacht.
+    # Hier sollt ihr euch um die Bewgung des Punkts kümmern
+    if richtung == 0 and delay == 0:
+        (dot,richtung) = moveDirectionRU(dot, player2)
+        
+    elif richtung == 1 and delay == 0:
+        (dot, richtung) = moveDirectionRD(dot, player2)
+        
+    elif richtung == 2 and delay == 0:
+        (dot, richtung) = moveDirectionLD(dot, player1)
+        
+    elif richtung == 3 and delay == 0:
+        (dot, richtung) = moveDirectionLU(dot, player1)
+        
+        
+    # Überprüfe ob ein Spieler im vorherigen Schritt einen Punkt erzielt hat 
+    # Ob das passiert ist wird mit dem Parameter Richtung angegeben 
+    # 4 -> Spieler 1 hat einen Punkt gemacht | 5 -> Spieler 2 hat einen Punkt gemacht
+    if richtung == 4:
+        # Überneheme Spielstand 
+        Punktestand = (Punktestand[0] + 1,Punktestand[1])
+        # Setze Dot zurück
+        dot = [(3,2),(3,2)]
+        # Setze Richtung zurück
+        random.seed()
+        richtung = random.randint(0,3)
+        # Setze Anfangs Delay zurück
+        delay = 0
+    elif richtung == 5:
+        # Überneheme Spielstand 
+        Punktestand = (Punktestand[0],Punktestand[1] + 1)
+        # Setze Dot zurück
+        dot = [(3,2),(3,2)]
+        # Setze Richtung zurück
+        random.seed()
+        richtung = random.randint(0,3)
+        # Setze Anfangs Delay zurück
+        delay = 0     
+        
+    delay = (delay + 1) % 5 
+    # male das Feld und warte bis zum nächsten Schleifendurchlauf
+    
+    drawField(player1, player2, dot, virtual)
+    time.sleep(0.1)
